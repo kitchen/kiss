@@ -1,0 +1,9 @@
+#+TITLE:     KISS
+#+AUTHOR:    Jeremy Kitchen
+#+EMAIL:     kitchen@kitchen.io
+
+KISS is a Rust library for parsing [[https://en.wikipedia.org/wiki/KISS_(TNC)][KISS]] frames.
+
+This library is mainly me learning Rust and [[https://github.com/Geal/nom][nom]] and therefore is rather ... bad. But that's ok! +Losing+ Failing is fun!
+
+I've already written a (bad) library to do this in Swift. I'm hoping that trying it in Rust will help me make the Swift one better at some point.
