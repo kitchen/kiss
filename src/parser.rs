@@ -1,18 +1,23 @@
+use nom::combinator::rest;
 use nom::{call, delimited, do_parse, map_opt, named, switch, tag, take};
 extern crate num;
 extern crate num_derive;
 use num_derive::FromPrimitive;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[allow(dead_code)]
-pub enum Frame {
-    // Data(&[u8]),
+pub struct Frame {
+    pub port: u8,
+    pub payload: Payload,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Payload {
+    Data(Vec<u8>),
     TXDelay(u8),
     P(u8),
     SlotTime(u8),
     TXTail(u8),
     FullDuplex(bool),
-    // SetHardware(&[u8]),
+    SetHardware(Vec<u8>),
     Return,
 }
 
@@ -22,10 +27,9 @@ pub const TFEND: u8 = 0xDC;
 pub const TFESC: u8 = 0xDD;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, FromPrimitive, PartialEq)]
-#[allow(dead_code)]
+#[derive(Debug, FromPrimitive, PartialEq)]
 pub enum FrameType {
-    DataFrame = 0x00,
+    Data = 0x00,
     TXDelay = 0x01,
     P = 0x02,
     SlotTime = 0x03,
@@ -50,65 +54,71 @@ named!(
     )
 );
 
-named!(pub txdelay_frame(&[u8]) -> Frame,
+named!(pub data_frame(&[u8]) -> Payload,
+       do_parse!(
+           data: rest >>
+               (Payload::Data(data.to_vec()))
+       )
+);
+
+named!(pub txdelay_frame(&[u8]) -> Payload,
        do_parse!(
            txdelay: take!(1) >>
-               (Frame::TXDelay(txdelay[0]))
+               (Payload::TXDelay(txdelay[0]))
        )
 );
 
-named!(pub p_frame(&[u8]) -> Frame,
+named!(pub p_frame(&[u8]) -> Payload,
        do_parse!(
            p: take!(1) >>
-               (Frame::P(p[0]))
+               (Payload::P(p[0]))
        )
 );
 
-named!(pub slot_time_frame(&[u8]) -> Frame,
+named!(pub slot_time_frame(&[u8]) -> Payload,
        do_parse!(
            slot_time: take!(1) >>
-               (Frame::SlotTime(slot_time[0]))
+               (Payload::SlotTime(slot_time[0]))
        )
 );
 
-named!(pub txtail_frame(&[u8]) -> Frame,
+named!(pub txtail_frame(&[u8]) -> Payload,
        do_parse!(
            txtail: take!(1) >>
-               (Frame::TXTail(txtail[0]))
+               (Payload::TXTail(txtail[0]))
        )
 );
 
-named!(pub fullduplex_frame(&[u8]) -> Frame,
+named!(pub fullduplex_frame(&[u8]) -> Payload,
        do_parse!(
            fullduplex: take!(1) >>
-               (Frame::FullDuplex(fullduplex[0] != 0))
+               (Payload::FullDuplex(fullduplex[0] != 0))
        )
 );
 
-named!(pub return_frame(&[u8]) -> Frame,
+named!(pub sethardware_frame(&[u8]) -> Payload,
        do_parse!(
-           (Frame::Return)
+           data: rest >>
+               (Payload::SetHardware(data.to_vec()))
        )
 );
 
-named!(pub frame_content(&[u8]) -> Frame,
+named!(pub return_frame(&[u8]) -> Payload,
+       do_parse!(
+           (Payload::Return)
+       )
+);
+
+named!(pub frame_payload(&[u8]) -> Payload,
        switch!(call!(frame_type),
-               // FrameType::Data =>
+               FrameType::Data => call!(data_frame) |
                FrameType::TXDelay => call!(txdelay_frame) |
                FrameType::P => call!(p_frame) |
                FrameType::SlotTime => call!(slot_time_frame) |
                FrameType::TXTail => call!(txtail_frame) |
                FrameType::FullDuplex => call!(fullduplex_frame) |
-               // FrameType::SetHardware =>
+               FrameType::SetHardware => call!(sethardware_frame) |
                FrameType::Return => call!(return_frame)
-       )
-);
-
-named!(pub frame(&[u8]) -> Frame,
-       delimited!(
-           fend,
-           frame_content,
-           fend
        )
 );
 
@@ -129,8 +139,8 @@ mod tests {
     #[test]
     fn test_frame_type() {
         assert_eq!(
-            Ok((EMPTY, FrameType::DataFrame)),
-            frame_type(&[FrameType::DataFrame as u8])
+            Ok((EMPTY, FrameType::Data)),
+            frame_type(&[FrameType::Data as u8])
         );
         assert_eq!(
             Ok((EMPTY, FrameType::TXDelay)),
@@ -162,66 +172,96 @@ mod tests {
     #[test]
     fn test_txdelay_frame() {
         let data = &[42];
-        assert_eq!(Ok((EMPTY, Frame::TXDelay(42))), txdelay_frame(data));
+        assert_eq!(Ok((EMPTY, Payload::TXDelay(42))), txdelay_frame(data));
+    }
+
+    #[test]
+    fn test_data_frame() {
+        let data = &[42, 43];
+        assert_eq!(Ok((EMPTY, Payload::Data(vec![42, 43]))), data_frame(data));
     }
 
     #[test]
     fn test_p_frame() {
         let data = &[42];
-        assert_eq!(Ok((EMPTY, Frame::P(42))), p_frame(data));
+        assert_eq!(Ok((EMPTY, Payload::P(42))), p_frame(data));
     }
 
     #[test]
     fn test_slot_time_frame() {
         let data = &[42];
-        assert_eq!(Ok((EMPTY, Frame::SlotTime(42))), slot_time_frame(data));
+        assert_eq!(Ok((EMPTY, Payload::SlotTime(42))), slot_time_frame(data));
     }
 
     #[test]
     fn test_txtail_frame() {
         let data = &[42];
-        assert_eq!(Ok((EMPTY, Frame::TXTail(42))), txtail_frame(data));
+        assert_eq!(Ok((EMPTY, Payload::TXTail(42))), txtail_frame(data));
     }
 
     #[test]
     fn test_fullduplex_frame() {
         let data = &[0];
         assert_eq!(
-            Ok((EMPTY, Frame::FullDuplex(false))),
+            Ok((EMPTY, Payload::FullDuplex(false))),
             fullduplex_frame(data)
         );
 
         let data = &[42];
-        assert_eq!(Ok((EMPTY, Frame::FullDuplex(true))), fullduplex_frame(data));
+        assert_eq!(
+            Ok((EMPTY, Payload::FullDuplex(true))),
+            fullduplex_frame(data)
+        );
+    }
+
+    #[test]
+    fn test_sethardware_frame() {
+        let data = &[42, 43];
+        assert_eq!(
+            Ok((EMPTY, Payload::SetHardware(vec![42, 43]))),
+            sethardware_frame(data)
+        );
     }
 
     #[test]
     fn test_return_frame() {
-        assert_eq!(Ok((EMPTY, Frame::Return)), return_frame(EMPTY));
+        assert_eq!(Ok((EMPTY, Payload::Return)), return_frame(EMPTY));
     }
 
     #[test]
-    fn test_frame_content() {
+    fn test_frame_payload() {
+        let data = &[FrameType::Data as u8, 42, 43];
+        assert_eq!(
+            Ok((EMPTY, Payload::Data(vec![42, 43]))),
+            frame_payload(data)
+        );
+
         let data = &[FrameType::TXDelay as u8, 42];
-        assert_eq!(Ok((EMPTY, Frame::TXDelay(42))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::TXDelay(42))), frame_payload(data));
 
         let data = &[FrameType::P as u8, 42];
-        assert_eq!(Ok((EMPTY, Frame::P(42))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::P(42))), frame_payload(data));
 
         let data = &[FrameType::SlotTime as u8, 42];
-        assert_eq!(Ok((EMPTY, Frame::SlotTime(42))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::SlotTime(42))), frame_payload(data));
 
         let data = &[FrameType::TXTail as u8, 42];
-        assert_eq!(Ok((EMPTY, Frame::TXTail(42))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::TXTail(42))), frame_payload(data));
 
         let data = &[FrameType::FullDuplex as u8, 0];
-        assert_eq!(Ok((EMPTY, Frame::FullDuplex(false))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::FullDuplex(false))), frame_payload(data));
 
         let data = &[FrameType::FullDuplex as u8, 42];
-        assert_eq!(Ok((EMPTY, Frame::FullDuplex(true))), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::FullDuplex(true))), frame_payload(data));
+
+        let data = &[FrameType::SetHardware as u8, 42, 43];
+        assert_eq!(
+            Ok((EMPTY, Payload::SetHardware(vec![42, 43]))),
+            frame_payload(data)
+        );
 
         let data = &[FrameType::Return as u8];
-        assert_eq!(Ok((EMPTY, Frame::Return)), frame_content(data));
+        assert_eq!(Ok((EMPTY, Payload::Return)), frame_payload(data));
     }
 
     #[test]
@@ -247,9 +287,9 @@ mod tests {
         todo!();
     }
 
-    #[test]
-    fn exit_kiss_mode() {
-        let data = &[FEND, FrameType::Return as u8, FEND];
-        assert_eq!(Ok((EMPTY, Frame::Return)), frame(data));
-    }
+    // #[test]
+    // fn exit_kiss_mode() {
+    //     let data = &[FEND, FrameType::Return as u8, FEND];
+    //     assert_eq!(Ok((EMPTY, Payload::Return)), frame(data));
+    // }
 }
