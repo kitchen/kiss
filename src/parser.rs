@@ -1,4 +1,4 @@
-use nom::bytes::streaming::{tag, take};
+use nom::bytes::streaming::{tag, take, take_while};
 use nom::combinator::{map_opt, rest};
 use nom::{do_parse, named, take, IResult};
 extern crate num;
@@ -157,6 +157,28 @@ pub fn frame_content(i: &[u8]) -> IResult<&[u8], Frame> {
         },
     ))
 }
+
+// pub fn unescape_frame_content(&[u8])
+
+pub fn parse_frame(i: &[u8]) -> IResult<&[u8], Frame> {
+    let (rest, _) = fend(i)?;
+    let (rest, frame_content_data) = take_while(|b: u8| b != FEND)(rest)?;
+    // TODO unescape frame data (TFEND TFESC)
+    let (_rest_inner, frame) = frame_content(frame_content_data)?;
+    // TODO make sure rest_inner is empty
+
+    let (rest, _) = fend(rest)?;
+
+    Ok((rest, frame))
+}
+
+// named!(pub parse_frame(&[u8]) -> Frame,
+//        delimited!(
+//            fend,
+//            frame_content,
+//            fend
+//        )
+// );
 
 #[cfg(test)]
 #[allow(unused_variables)]
@@ -407,11 +429,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn send_the_characters_test_out_of_tnc_port_0() {
-        let frame_data: [u8; 7] = [0xC0, 0x00, 0x54, 0x45, 0x53, 0x54, 0xC0];
-
-        todo!();
+        let frame_data = &[0xC0, 0x00, 0x54, 0x45, 0x53, 0x54, 0xC0];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0,
+                    payload: Payload::Data(vec![0x54, 0x45, 0x53, 0x54])
+                }
+            )),
+            parse_frame(frame_data)
+        );
     }
 
     #[test]
