@@ -122,15 +122,13 @@ pub fn frame_type_port(i: &[u8]) -> IResult<&[u8], (u8, FrameType)> {
     // using a closure, so ... yea, this works, but needs some work
     // really, I think I just need to figure out how to return errors proper
     // because that's really all I'm doing with the map_opt
-    let result = map_opt(take(1usize), |_| {
+    let (_, frame_type) = map_opt(take(1usize), |_| {
         let frame_type = num::FromPrimitive::from_u8(byte & 0x0F)?;
         if frame_type == FrameType::Return && port != 0x0F {
             return None;
         }
         Some(frame_type)
-    })(byte_a);
-
-    let (_, frame_type) = result?;
+    })(byte_a)?;
 
     Ok((rest, (port, frame_type)))
 }
