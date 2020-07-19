@@ -1,5 +1,6 @@
+use nom::bytes::streaming::tag;
 use nom::combinator::rest;
-use nom::{call, delimited, do_parse, map_opt, named, switch, tag, take};
+use nom::{call, delimited, do_parse, map_opt, named, switch, tag, take, IResult};
 extern crate num;
 extern crate num_derive;
 use num_derive::FromPrimitive;
@@ -21,11 +22,6 @@ pub enum Payload {
     Return,
 }
 
-pub const FEND: u8 = 0xC0;
-pub const FESC: u8 = 0xDB;
-pub const TFEND: u8 = 0xDC;
-pub const TFESC: u8 = 0xDD;
-
 #[repr(u8)]
 #[derive(Debug, FromPrimitive, PartialEq)]
 pub enum FrameType {
@@ -39,10 +35,25 @@ pub enum FrameType {
     Return = 0xFF,
 }
 
-named!(pub fend, tag!([FEND]));
-named!(pub tfend, tag!([TFEND]));
-named!(pub fesc, tag!([FESC]));
-named!(pub tfesc, tag!([TFESC]));
+pub const FEND: u8 = 0xC0;
+pub fn fend(i: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag(&[FEND])(i)
+}
+
+pub const FESC: u8 = 0xDB;
+pub fn fesc(i: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag(&[FESC])(i)
+}
+
+pub const TFEND: u8 = 0xDC;
+pub fn tfend(i: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag(&[TFEND])(i)
+}
+
+pub const TFESC: u8 = 0xDB;
+pub fn tfesc(i: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag(&[TFESC])(i)
+}
 
 named!(
     pub frame_type(&[u8]) -> FrameType,
