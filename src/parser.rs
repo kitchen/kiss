@@ -1,10 +1,11 @@
-use nom::bytes::streaming::tag;
-use nom::combinator::rest;
-use nom::{call, delimited, do_parse, map_opt, named, switch, tag, take, IResult};
+use nom::bytes::streaming::{tag, take};
+use nom::combinator::{map_opt, rest};
+use nom::{do_parse, named, take, IResult};
 extern crate num;
 extern crate num_derive;
 use num_derive::FromPrimitive;
 
+#[derive(Debug, PartialEq)]
 pub struct Frame {
     pub port: u8,
     pub payload: Payload,
@@ -32,7 +33,7 @@ pub enum FrameType {
     TXTail = 0x04,
     FullDuplex = 0x05,
     SetHardware = 0x06,
-    Return = 0xFF,
+    Return = 0x0F,
 }
 
 pub const FEND: u8 = 0xC0;
@@ -54,16 +55,6 @@ pub const TFESC: u8 = 0xDB;
 pub fn tfesc(i: &[u8]) -> IResult<&[u8], &[u8]> {
     tag(&[TFESC])(i)
 }
-
-named!(
-    pub frame_type(&[u8]) -> FrameType,
-    map_opt!(
-        take!(1),
-        |bytes: &[u8]| {
-            num::FromPrimitive::from_u8(bytes[0])
-        }
-    )
-);
 
 named!(pub data_frame(&[u8]) -> Payload,
        do_parse!(
@@ -120,18 +111,54 @@ named!(pub return_frame(&[u8]) -> Payload,
        )
 );
 
-named!(pub frame_payload(&[u8]) -> Payload,
-       switch!(call!(frame_type),
-               FrameType::Data => call!(data_frame) |
-               FrameType::TXDelay => call!(txdelay_frame) |
-               FrameType::P => call!(p_frame) |
-               FrameType::SlotTime => call!(slot_time_frame) |
-               FrameType::TXTail => call!(txtail_frame) |
-               FrameType::FullDuplex => call!(fullduplex_frame) |
-               FrameType::SetHardware => call!(sethardware_frame) |
-               FrameType::Return => call!(return_frame)
-       )
-);
+pub fn frame_type_port(i: &[u8]) -> IResult<&[u8], (u8, FrameType)> {
+    let (rest, byte_a) = take(1usize)(i)?;
+    let byte = byte_a[0];
+    let port = byte >> 4;
+    // this just seems really ugly to me, I'm sure there's a better way to do it.
+    // this validates that FrameType::Return can only be port 0x0F and also
+    // that the frame type is a real frame type
+    // also this is currently set up to use an unnecessary take(1usize) since we're
+    // using a closure, so ... yea, this works, but needs some work
+    // really, I think I just need to figure out how to return errors proper
+    // because that's really all I'm doing with the map_opt
+    let result = map_opt(take(1usize), |_| {
+        let frame_type = num::FromPrimitive::from_u8(byte & 0x0F)?;
+        if frame_type == FrameType::Return && port != 0x0F {
+            return None;
+        }
+        Some(frame_type)
+    })(byte_a);
+
+    let (_, frame_type) = result?;
+
+    Ok((rest, (port, frame_type)))
+}
+
+pub fn frame_content(i: &[u8]) -> IResult<&[u8], Frame> {
+    let (rest, (port, frame_type)) = frame_type_port(i)?;
+
+    let (rest, payload) = match frame_type {
+        FrameType::Data => data_frame(rest),
+        FrameType::TXDelay => txdelay_frame(rest),
+        FrameType::P => p_frame(rest),
+        FrameType::SlotTime => slot_time_frame(rest),
+        FrameType::TXTail => txtail_frame(rest),
+        FrameType::FullDuplex => fullduplex_frame(rest),
+        FrameType::SetHardware => sethardware_frame(rest),
+        FrameType::Return => Ok((rest, Payload::Return)),
+    }?;
+
+    // TODO asert that there's nothing left unparsed here
+
+    Ok((
+        rest,
+        Frame {
+            port: port,
+            payload: payload,
+        },
+    ))
+}
 
 #[cfg(test)]
 #[allow(unused_variables)]
@@ -147,38 +174,57 @@ mod tests {
         assert_eq!(Ok((EMPTY, &[TFESC][..])), tfesc(&[TFESC]));
     }
 
+    // TODO move the cases from `test_frame_type` into here
     #[test]
-    fn test_frame_type() {
+    fn test_frame_type_port() {
+        let data = &[0x50 | FrameType::P as u8];
+        assert_eq!(Ok((EMPTY, (5u8, FrameType::P))), frame_type_port(data));
+
+        let data = &[0xF0 | FrameType::Return as u8];
         assert_eq!(
-            Ok((EMPTY, FrameType::Data)),
-            frame_type(&[FrameType::Data as u8])
+            Ok((EMPTY, (0x0F, FrameType::Return))),
+            frame_type_port(data)
         );
-        assert_eq!(
-            Ok((EMPTY, FrameType::TXDelay)),
-            frame_type(&[FrameType::TXDelay as u8])
-        );
-        assert_eq!(Ok((EMPTY, FrameType::P)), frame_type(&[FrameType::P as u8]));
-        assert_eq!(
-            Ok((EMPTY, FrameType::SlotTime)),
-            frame_type(&[FrameType::SlotTime as u8])
-        );
-        assert_eq!(
-            Ok((EMPTY, FrameType::TXTail)),
-            frame_type(&[FrameType::TXTail as u8])
-        );
-        assert_eq!(
-            Ok((EMPTY, FrameType::FullDuplex)),
-            frame_type(&[FrameType::FullDuplex as u8])
-        );
-        assert_eq!(
-            Ok((EMPTY, FrameType::SetHardware)),
-            frame_type(&[FrameType::SetHardware as u8])
-        );
-        assert_eq!(
-            Ok((EMPTY, FrameType::Return)),
-            frame_type(&[FrameType::Return as u8])
+
+        let data = &[0x0F];
+        assert_ne!(
+            Ok((EMPTY, (0x00, FrameType::Return))),
+            frame_type_port(data)
         );
     }
+
+    // #[test]
+    // fn test_frame_type() {
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::Data)),
+    //         frame_type(&[FrameType::Data as u8])
+    //     );
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::TXDelay)),
+    //         frame_type(&[FrameType::TXDelay as u8])
+    //     );
+    //     assert_eq!(Ok((EMPTY, FrameType::P)), frame_type(&[FrameType::P as u8]));
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::SlotTime)),
+    //         frame_type(&[FrameType::SlotTime as u8])
+    //     );
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::TXTail)),
+    //         frame_type(&[FrameType::TXTail as u8])
+    //     );
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::FullDuplex)),
+    //         frame_type(&[FrameType::FullDuplex as u8])
+    //     );
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::SetHardware)),
+    //         frame_type(&[FrameType::SetHardware as u8])
+    //     );
+    //     assert_eq!(
+    //         Ok((EMPTY, FrameType::Return)),
+    //         frame_type(&[FrameType::Return as u8])
+    //     );
+    // }
 
     #[test]
     fn test_txdelay_frame() {
@@ -240,39 +286,126 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_payload() {
-        let data = &[FrameType::Data as u8, 42, 43];
+    fn test_frame_content() {
+        let data = &[0x20 | FrameType::Data as u8, 42, 43];
         assert_eq!(
-            Ok((EMPTY, Payload::Data(vec![42, 43]))),
-            frame_payload(data)
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 2,
+                    payload: Payload::Data(vec![42, 43])
+                }
+            )),
+            frame_content(data)
         );
 
-        let data = &[FrameType::TXDelay as u8, 42];
-        assert_eq!(Ok((EMPTY, Payload::TXDelay(42))), frame_payload(data));
-
-        let data = &[FrameType::P as u8, 42];
-        assert_eq!(Ok((EMPTY, Payload::P(42))), frame_payload(data));
-
-        let data = &[FrameType::SlotTime as u8, 42];
-        assert_eq!(Ok((EMPTY, Payload::SlotTime(42))), frame_payload(data));
-
-        let data = &[FrameType::TXTail as u8, 42];
-        assert_eq!(Ok((EMPTY, Payload::TXTail(42))), frame_payload(data));
-
-        let data = &[FrameType::FullDuplex as u8, 0];
-        assert_eq!(Ok((EMPTY, Payload::FullDuplex(false))), frame_payload(data));
-
-        let data = &[FrameType::FullDuplex as u8, 42];
-        assert_eq!(Ok((EMPTY, Payload::FullDuplex(true))), frame_payload(data));
-
-        let data = &[FrameType::SetHardware as u8, 42, 43];
+        let data = &[0x30 | FrameType::TXDelay as u8, 42];
         assert_eq!(
-            Ok((EMPTY, Payload::SetHardware(vec![42, 43]))),
-            frame_payload(data)
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 3,
+                    payload: Payload::TXDelay(42)
+                }
+            )),
+            frame_content(data)
         );
 
-        let data = &[FrameType::Return as u8];
-        assert_eq!(Ok((EMPTY, Payload::Return)), frame_payload(data));
+        let data = &[0x00 | FrameType::P as u8, 42];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0,
+                    payload: Payload::P(42)
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0xC0 | FrameType::SlotTime as u8, 42];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0x0C,
+                    payload: Payload::SlotTime(42)
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0xF0 | FrameType::TXTail as u8, 42];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0x0F,
+                    payload: Payload::TXTail(42)
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0x30 | FrameType::FullDuplex as u8, 0];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 3,
+                    payload: Payload::FullDuplex(false)
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0x70 | FrameType::FullDuplex as u8, 42];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 7,
+                    payload: Payload::FullDuplex(true)
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0x80 | FrameType::SetHardware as u8, 42, 43];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 8,
+                    payload: Payload::SetHardware(vec![42, 43])
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0x30 | FrameType::Return as u8];
+        assert_ne!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0x0F,
+                    payload: Payload::Return
+                }
+            )),
+            frame_content(data)
+        );
+
+        let data = &[0xF0 | FrameType::Return as u8];
+        assert_eq!(
+            Ok((
+                EMPTY,
+                Frame {
+                    port: 0x0F,
+                    payload: Payload::Return
+                }
+            )),
+            frame_content(data)
+        );
     }
 
     #[test]
