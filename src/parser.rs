@@ -1,5 +1,9 @@
-use nom::bytes::streaming::{tag, take, take_while};
-use nom::combinator::{map_opt, rest};
+use nom::branch::alt;
+use nom::bytes::streaming::{tag, take, take_till};
+use nom::combinator::{map_opt, map_parser, rest};
+use nom::multi::fold_many0;
+use nom::number::streaming::be_u8;
+use nom::sequence::delimited;
 use nom::{do_parse, named, take, IResult};
 extern crate num;
 extern crate num_derive;
@@ -122,7 +126,8 @@ pub fn frame_type_port(i: &[u8]) -> IResult<&[u8], (u8, FrameType)> {
     // using a closure, so ... yea, this works, but needs some work
     // really, I think I just need to figure out how to return errors proper
     // because that's really all I'm doing with the map_opt
-    let (_, frame_type) = map_opt(take(1usize), |_| {
+    // TODO yea, byte_a is totally useless here, but I don't know how to get rid of it.
+    let (_, frame_type) = map_opt(be_u8, |_| {
         let frame_type = num::FromPrimitive::from_u8(byte & 0x0F)?;
         if frame_type == FrameType::Return && port != 0x0F {
             return None;
@@ -133,7 +138,8 @@ pub fn frame_type_port(i: &[u8]) -> IResult<&[u8], (u8, FrameType)> {
     Ok((rest, (port, frame_type)))
 }
 
-pub fn frame_content(i: &[u8]) -> IResult<&[u8], Frame> {
+pub fn frame_content(i: Vec<u8>) -> IResult<&[u8], Frame> {
+    let i = i.as_slice();
     let (rest, (port, frame_type)) = frame_type_port(i)?;
 
     let (rest, payload) = match frame_type {
@@ -158,27 +164,50 @@ pub fn frame_content(i: &[u8]) -> IResult<&[u8], Frame> {
     ))
 }
 
-// pub fn unescape_frame_content(&[u8])
-
-pub fn parse_frame(i: &[u8]) -> IResult<&[u8], Frame> {
-    let (rest, _) = fend(i)?;
-    let (rest, frame_content_data) = take_while(|b: u8| b != FEND)(rest)?;
-    // TODO unescape frame data (TFEND TFESC)
-    let (_rest_inner, frame) = frame_content(frame_content_data)?;
-    // TODO make sure rest_inner is empty
-
-    let (rest, _) = fend(rest)?;
-
-    Ok((rest, frame))
+pub fn fesc_tfend(i: &[u8]) -> IResult<&[u8], u8> {
+    let (rest, _) = tag(&[FESC, TFEND])(i)?;
+    Ok((rest, FEND))
 }
 
-// named!(pub parse_frame(&[u8]) -> Frame,
-//        delimited!(
-//            fend,
-//            frame_content,
-//            fend
-//        )
-// );
+pub fn fesc_tfesc(i: &[u8]) -> IResult<&[u8], u8> {
+    let (rest, _) = tag(&[FESC, TFESC])(i)?;
+    Ok((rest, FESC))
+}
+
+// From the spec:
+// Receipt of any character other than TFESC or TFEND while in escaped mode is an error; no action is taken and frame assembly continues.
+// I'm choosing to interpret this as the FESC is discarded and the non TFESC/TFEND byte goes through without issue
+pub fn fesc_other(i: &[u8]) -> IResult<&[u8], u8> {
+    let (rest, _) = fesc(i)?;
+    be_u8(rest)
+}
+
+pub fn take_frame_data(i: &[u8]) -> IResult<&[u8], u8> {
+    alt((fesc_tfend, fesc_tfesc, fesc_other, be_u8))(i)
+}
+
+// change this to be a wrapper around some parser. so, similar to
+// map_parser, have this map_unescaped_frame_data
+// with_unescaped_frame_data
+pub fn unescape_frame_data(i: &[u8]) -> IResult<&[u8], Vec<u8>> {
+    fold_many0(take_frame_data, Vec::new(), |mut acc: Vec<_>, item| {
+        acc.push(item);
+        acc
+    })(i)
+}
+
+pub fn parse_frame(i: &[u8]) -> IResult<&[u8], Frame> {
+    // TODO take while not FEND
+    //
+    delimited(
+        fend,
+        map_parser(
+            take_till(|b: u8| b == FEND),
+            map_parser(unescape_frame_data, frame_content),
+        ),
+        fend,
+    )(i)
+}
 
 #[cfg(test)]
 #[allow(unused_variables)]
@@ -245,6 +274,29 @@ mod tests {
     //         frame_type(&[FrameType::Return as u8])
     //     );
     // }
+
+    #[test]
+    fn test_take_frame_data() {
+        assert_eq!(Ok((EMPTY, 0x00)), take_frame_data(&[0x00]));
+
+        let rest: &[u8] = &[0x42];
+        let data: &[u8] = &[0x00, 0x42];
+        assert_eq!(Ok((rest, 0x00)), take_frame_data(data));
+
+        let data: &[u8] = &[FESC, TFEND];
+        assert_eq!(Ok((EMPTY, FEND)), take_frame_data(data));
+
+        let rest: &[u8] = &[0x42];
+        let data: &[u8] = &[FESC, TFEND, 0x42];
+        assert_eq!(Ok((rest, FEND)), take_frame_data(data));
+
+        let data: &[u8] = &[FESC, TFESC];
+        assert_eq!(Ok((EMPTY, FESC)), take_frame_data(data));
+
+        let rest: &[u8] = &[0x42];
+        let data: &[u8] = &[FESC, TFESC, 0x42];
+        assert_eq!(Ok((rest, TFESC)), take_frame_data(data));
+    }
 
     #[test]
     fn test_txdelay_frame() {
