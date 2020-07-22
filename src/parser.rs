@@ -1,6 +1,6 @@
 use nom::branch::alt;
 use nom::bytes::streaming::{tag, take, take_till};
-use nom::combinator::{map_opt, map_parser, rest};
+use nom::combinator::{map, map_opt, map_parser, rest};
 use nom::multi::fold_many0;
 use nom::number::streaming::be_u8;
 use nom::sequence::delimited;
@@ -138,8 +138,7 @@ pub fn frame_type_port(i: &[u8]) -> IResult<&[u8], (u8, FrameType)> {
     Ok((rest, (port, frame_type)))
 }
 
-pub fn frame_content(i: Vec<u8>) -> IResult<&[u8], Frame> {
-    let i = i.as_slice();
+pub fn frame_content(i: &[u8]) -> IResult<&[u8], Frame> {
     let (rest, (port, frame_type)) = frame_type_port(i)?;
 
     let (rest, payload) = match frame_type {
@@ -186,9 +185,6 @@ pub fn take_frame_data(i: &[u8]) -> IResult<&[u8], u8> {
     alt((fesc_tfend, fesc_tfesc, fesc_other, be_u8))(i)
 }
 
-// change this to be a wrapper around some parser. so, similar to
-// map_parser, have this map_unescaped_frame_data
-// with_unescaped_frame_data
 pub fn unescape_frame_data(i: &[u8]) -> IResult<&[u8], Vec<u8>> {
     fold_many0(take_frame_data, Vec::new(), |mut acc: Vec<_>, item| {
         acc.push(item);
@@ -197,13 +193,14 @@ pub fn unescape_frame_data(i: &[u8]) -> IResult<&[u8], Vec<u8>> {
 }
 
 pub fn parse_frame(i: &[u8]) -> IResult<&[u8], Frame> {
-    // TODO take while not FEND
-    //
     delimited(
         fend,
         map_parser(
             take_till(|b: u8| b == FEND),
-            map_parser(unescape_frame_data, frame_content),
+            map_parser(
+                map(unescape_frame_data, |v: Vec<_>| v.as_slice()),
+                frame_content,
+            ),
         ),
         fend,
     )(i)
